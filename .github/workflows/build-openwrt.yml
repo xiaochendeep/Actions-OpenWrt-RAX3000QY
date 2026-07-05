@@ -121,6 +121,12 @@ jobs:
       run: |
         cd openwrt
 
+        rm -rf feeds/packages/net/xray-core
+        wget -r --no-parent https://cdn.jsdelivr.net/gh/immortalwrt/packages@master/net/xray-core/
+        cp -rf cdn.jsdelivr.net/gh/immortalwrt/packages@master/net/xray-core feeds/packages/net/xray-core/
+        rm -rf cdn.jsdelivr.net
+        find feeds/packages/net/xray-core -name index.html -exec rm {} \;
+
         rm -rf feeds/packages/net/natmap
         wget -r --no-parent https://cdn.jsdelivr.net/gh/immortalwrt/packages@master/net/natmap/
         cp -rf cdn.jsdelivr.net/gh/immortalwrt/packages@master/net/natmap feeds/packages/net/natmap/
