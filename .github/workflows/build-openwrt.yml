@@ -133,12 +133,6 @@ jobs:
         rm -rf cdn.jsdelivr.net
         find feeds/packages/net/smartdns -name index.html -exec rm {} \;
 
-        rm -rf feeds/packages/net/ddns-go
-        wget -r --no-parent https://cdn.jsdelivr.net/gh/immortalwrt/packages@master/net/ddns-go/
-        cp -rf cdn.jsdelivr.net/gh/immortalwrt/packages@master/net/ddns-go feeds/packages/net/ddns-go/
-        rm -rf cdn.jsdelivr.net
-        find feeds/packages/net/ddns-go -name index.html -exec rm {} \;    
-
         rm -rf feeds/packages/net/frp
         wget -r --no-parent https://cdn.jsdelivr.net/gh/immortalwrt/packages@master/net/frp/
         cp -rf cdn.jsdelivr.net/gh/immortalwrt/packages@master/net/frp feeds/packages/net/frp/
