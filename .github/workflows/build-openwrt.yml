@@ -175,6 +175,58 @@ jobs:
         find dl -size -1024c -exec ls -l {} \;
         find dl -size -1024c -exec rm -f {} \;
 
+    - name: Ensure WireGuard kernel source
+      run: |
+        cd openwrt
+        KERNEL_TARGET_CONFIG="target/linux/ipq50xx/config-5.4"
+        if [ -f "$KERNEL_TARGET_CONFIG" ]; then
+          sed -i '/CONFIG_WIREGUARD/d;/CONFIG_NET_UDP_TUNNEL/d;/CONFIG_CRYPTO_LIB_CHACHA/d;/CONFIG_CRYPTO_LIB_CHACHA20POLY1305/d;/CONFIG_CRYPTO_LIB_POLY1305/d;/CONFIG_CRYPTO_LIB_BLAKE2S/d;/CONFIG_CRYPTO_LIB_CURVE25519/d' "$KERNEL_TARGET_CONFIG"
+          cat >> "$KERNEL_TARGET_CONFIG" <<'EOF'
+        CONFIG_WIREGUARD=m
+        # CONFIG_WIREGUARD_DEBUG is not set
+        CONFIG_NET_UDP_TUNNEL=m
+        CONFIG_CRYPTO_LIB_CHACHA=m
+        CONFIG_CRYPTO_LIB_CHACHA20POLY1305=m
+        CONFIG_CRYPTO_LIB_POLY1305=m
+        CONFIG_CRYPTO_LIB_BLAKE2S=m
+        CONFIG_CRYPTO_LIB_CURVE25519=m
+        EOF
+        fi
+
+        make defconfig
+        make target/linux/prepare V=s
+        LINUX_DIR="$(find build_dir/target-* -type d -path '*/linux-ipq50xx*/linux-5.4*' | head -n 1)"
+        if [ -z "$LINUX_DIR" ]; then
+          echo "::error::kernel source directory was not prepared"
+          exit 1
+        fi
+
+        if [ ! -d "$LINUX_DIR/drivers/net/wireguard" ]; then
+          echo "WireGuard source is missing from $LINUX_DIR; applying 5.4 backport patches"
+          for patch in target/linux/generic/backport-5.4/080-wireguard-*.patch; do
+            patch -d "$LINUX_DIR" -p1 < "$patch"
+          done
+        fi
+
+        if [ ! -d "$LINUX_DIR/drivers/net/wireguard" ]; then
+          echo "::error::drivers/net/wireguard is still missing after prepare"
+          exit 1
+        fi
+        grep -R "config WIREGUARD" "$LINUX_DIR" || {
+          echo "::error::CONFIG_WIREGUARD is not defined in the prepared kernel source"
+          exit 1
+        }
+        if [ -f "$LINUX_DIR/.config" ]; then
+          ./scripts/config --file "$LINUX_DIR/.config" -m WIREGUARD
+          ./scripts/config --file "$LINUX_DIR/.config" -d WIREGUARD_DEBUG
+          ./scripts/config --file "$LINUX_DIR/.config" -m NET_UDP_TUNNEL
+          ./scripts/config --file "$LINUX_DIR/.config" -m CRYPTO_LIB_CHACHA
+          ./scripts/config --file "$LINUX_DIR/.config" -m CRYPTO_LIB_CHACHA20POLY1305
+          ./scripts/config --file "$LINUX_DIR/.config" -m CRYPTO_LIB_POLY1305
+          ./scripts/config --file "$LINUX_DIR/.config" -m CRYPTO_LIB_BLAKE2S
+          ./scripts/config --file "$LINUX_DIR/.config" -m CRYPTO_LIB_CURVE25519
+        fi
+
     - name: Compile the firmware
       id: compile
       run: |
@@ -185,6 +237,60 @@ jobs:
         grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
         [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV
         echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
+
+    - name: Verify WireGuard kernel module
+      if: steps.compile.outputs.status == 'success'
+      run: |
+        cd openwrt
+        KERNEL_CONFIG="$(find build_dir/target-* -path '*/linux-ipq50xx*/linux-5.4*/.config' | head -n 1)"
+        if [ -z "$KERNEL_CONFIG" ]; then
+          echo "::error::kernel .config was not found"
+          exit 1
+        fi
+
+        echo "Kernel WireGuard config:"
+        grep -H '^CONFIG_WIREGUARD=' "$KERNEL_CONFIG" || true
+        if ! grep -q '^CONFIG_WIREGUARD=m$' "$KERNEL_CONFIG"; then
+          echo "::error::CONFIG_WIREGUARD is not compiled as a module"
+          exit 1
+        fi
+
+        echo "WireGuard build output:"
+        find build_dir/target-* -path '*/linux-ipq50xx*/linux-5.4*/drivers/net/wireguard/wireguard.ko*' -print
+        if ! find build_dir/target-* -path '*/linux-ipq50xx*/linux-5.4*/drivers/net/wireguard/wireguard.ko*' | grep -q .; then
+          echo "::error::wireguard.ko was not built in the kernel source tree"
+          exit 1
+        fi
+
+        echo "WireGuard rootfs module:"
+        find build_dir/target-* -path '*/root-*/lib/modules/*/wireguard.ko*' -print
+        ROOTFS_WG="$(find build_dir/target-* -path '*/root-*/lib/modules/*/wireguard.ko*' | head -n 1)"
+        if [ -z "$ROOTFS_WG" ]; then
+          echo "::error::wireguard.ko is missing from the firmware rootfs"
+          exit 1
+        fi
+        file "$ROOTFS_WG" || true
+        strings "$ROOTFS_WG" | grep -m1 '^vermagic=' || true
+
+        echo "WireGuard kmod package contents:"
+        IPK_REL="$(find bin/packages bin/targets -name 'kmod-wireguard*.ipk' 2>/dev/null | head -n 1)"
+        if [ -z "$IPK_REL" ]; then
+          echo "::error::kmod-wireguard ipk was not produced"
+          exit 1
+        fi
+        IPK="$PWD/$IPK_REL"
+        TMP_IPK="$(mktemp -d)"
+        (cd "$TMP_IPK" && ar x "$IPK")
+        DATA_TAR="$(find "$TMP_IPK" -name 'data.tar*' | head -n 1)"
+        if [ -z "$DATA_TAR" ]; then
+          echo "::error::kmod-wireguard ipk has no data archive"
+          exit 1
+        fi
+        tar -tf "$DATA_TAR" | tee /tmp/kmod-wireguard-files.txt
+        if ! grep -q 'lib/modules/.*/wireguard.ko' /tmp/kmod-wireguard-files.txt; then
+          echo "::error::kmod-wireguard ipk does not contain wireguard.ko"
+          exit 1
+        fi
         
     - name: Check space usage
       if: (!cancelled())
@@ -203,6 +309,13 @@ jobs:
       run: |
         cd openwrt/bin/targets/*/*
         rm -rf packages
+        for image in *-squashfs-nand-factory.ubi; do
+          [ -e "$image" ] || continue
+          cp -f "$image" "${image%.ubi}.bin"
+        done
+        if ls *-squashfs-nand-factory.bin >/dev/null 2>&1; then
+          sha256sum *-squashfs-nand-factory.bin >> sha256sums
+        fi
         echo "FIRMWARE=$PWD" >> $GITHUB_ENV
         echo "status=success" >> $GITHUB_OUTPUT
 
@@ -218,7 +331,32 @@ jobs:
       if: env.UPLOAD_RELEASE == 'true' && steps.organize.outputs.status == 'success'
       run: |
         echo "release_tag=RAX3000Q-$(date +"%Y.%m.%d-%H%M")" >> $GITHUB_OUTPUT
-        touch release.txt
+        cat > release.txt <<'EOF'
+        ## 固件文件说明
+
+        | 文件 | 用途 | 是否刷入系统 |
+        | --- | --- | --- |
+        | `*-squashfs-nand-factory.ubi` | NAND 机型正式 factory 固件，适合通过支持 UBI 的恢复模式、U-Boot 或 factory 刷机方式写入 | 是 |
+        | `*-squashfs-nand-factory.bin` | 与 `.ubi` 内容完全相同的副本，只是改成 `.bin` 后缀，方便某些网页上传框识别 | 是，但本质仍是 UBI 固件 |
+        | `*-initramfs-fit-uImage.itb` | 临时内存启动镜像，常用于 U-Boot/TFTP 测试、救援、临时进系统 | 否，不建议当作最终系统刷入 |
+        | `*.manifest` | 本次固件内置软件包清单 | 否 |
+        | `sha256sums` | 固件校验值 | 否 |
+        | `*.buildinfo` | 构建配置和版本信息 | 否 |
+
+        ## 已内置能力
+
+        - 网络：IPv6、Wi-Fi NSS、NAT NSS / TurboACC、FullCone NAT、TProxy、ipset、dnsmasq-full。
+        - 海外分流：PassWall、Xray Core、Shadowsocks-libev、ShadowsocksR-libev、Trojan Plus、HAProxy、Simple Obfs、v2ray-geoip。
+        - DNS：SmartDNS、ChinaDNS-NG、dnsmasq-full。
+        - VPN / 组网：WireGuard 内核模块和 LuCI 管理、Tailscale、ZeroTier。
+        - 常用工具：ttyd、文件传输、NATMap、UPnP、WOL、自动重启、Watchcat、vlmcsd、xlnetacc。
+
+        ## 注意
+
+        - `.bin` 只是 `.ubi` 的改名副本，不是另外一种 sysupgrade 格式。
+        - `.itb` 是临时启动镜像，不要当作最终系统刷入。
+        - OpenClash、Docker、AdGuardHome、mosdns、ddns-go、frpc、旧版 v2ray-core / v2ray-plugin / v2ray-geosite 未内置。
+        EOF
         echo "status=success" >> $GITHUB_OUTPUT
 
     - name: Upload firmware to release
