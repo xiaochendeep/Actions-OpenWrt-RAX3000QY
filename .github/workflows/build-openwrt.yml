@@ -174,14 +174,19 @@ jobs:
         cd openwrt
         KERNEL_TARGET_CONFIG="target/linux/ipq50xx/config-5.4"
         if [ -f "$KERNEL_TARGET_CONFIG" ]; then
-          sed -i '/CONFIG_WIREGUARD/d;/CONFIG_NET_UDP_TUNNEL/d;/CONFIG_CRYPTO_LIB_CHACHA/d;/CONFIG_CRYPTO_LIB_CHACHA20POLY1305/d;/CONFIG_CRYPTO_LIB_POLY1305/d;/CONFIG_CRYPTO_LIB_BLAKE2S/d;/CONFIG_CRYPTO_LIB_BLAKE2S_GENERIC/d;/CONFIG_CRYPTO_ARCH_HAVE_LIB_BLAKE2S/d;/CONFIG_CRYPTO_LIB_CURVE25519/d;/CONFIG_CRYPTO_LIB_CURVE25519_GENERIC/d;/CONFIG_CRYPTO_ARCH_HAVE_LIB_CURVE25519/d' "$KERNEL_TARGET_CONFIG"
+          sed -i '/CONFIG_WIREGUARD/d;/CONFIG_NET_UDP_TUNNEL/d;/CONFIG_CRYPTO_LIB_CHACHA/d;/CONFIG_CRYPTO_LIB_CHACHA_GENERIC/d;/CONFIG_CRYPTO_ARCH_HAVE_LIB_CHACHA/d;/CONFIG_CRYPTO_LIB_CHACHA20POLY1305/d;/CONFIG_CRYPTO_LIB_POLY1305/d;/CONFIG_CRYPTO_LIB_POLY1305_GENERIC/d;/CONFIG_CRYPTO_LIB_POLY1305_RSIZE/d;/CONFIG_CRYPTO_ARCH_HAVE_LIB_POLY1305/d;/CONFIG_CRYPTO_LIB_BLAKE2S/d;/CONFIG_CRYPTO_LIB_BLAKE2S_GENERIC/d;/CONFIG_CRYPTO_ARCH_HAVE_LIB_BLAKE2S/d;/CONFIG_CRYPTO_LIB_CURVE25519/d;/CONFIG_CRYPTO_LIB_CURVE25519_GENERIC/d;/CONFIG_CRYPTO_ARCH_HAVE_LIB_CURVE25519/d' "$KERNEL_TARGET_CONFIG"
           cat >> "$KERNEL_TARGET_CONFIG" <<'EOF'
         CONFIG_WIREGUARD=m
         # CONFIG_WIREGUARD_DEBUG is not set
         CONFIG_NET_UDP_TUNNEL=m
         CONFIG_CRYPTO_LIB_CHACHA=m
+        CONFIG_CRYPTO_LIB_CHACHA_GENERIC=m
+        # CONFIG_CRYPTO_ARCH_HAVE_LIB_CHACHA is not set
         CONFIG_CRYPTO_LIB_CHACHA20POLY1305=m
         CONFIG_CRYPTO_LIB_POLY1305=m
+        CONFIG_CRYPTO_LIB_POLY1305_GENERIC=m
+        CONFIG_CRYPTO_LIB_POLY1305_RSIZE=9
+        # CONFIG_CRYPTO_ARCH_HAVE_LIB_POLY1305 is not set
         CONFIG_CRYPTO_LIB_BLAKE2S=m
         CONFIG_CRYPTO_LIB_BLAKE2S_GENERIC=m
         # CONFIG_CRYPTO_ARCH_HAVE_LIB_BLAKE2S is not set
@@ -231,6 +236,27 @@ jobs:
         if [ ! -f "$LINUX_DIR/lib/crypto/blake2s-generic.c" ]; then
           fetch_linux55_file lib/crypto/blake2s-generic.c
         fi
+        if ! grep -q 'CHACHA_STATE_WORDS' "$LINUX_DIR/include/crypto/chacha.h" 2>/dev/null || ! grep -q 'chacha20_crypt' "$LINUX_DIR/include/crypto/chacha.h" 2>/dev/null; then
+          fetch_linux55_file include/crypto/chacha.h
+        fi
+        if [ ! -f "$LINUX_DIR/include/crypto/internal/chacha.h" ]; then
+          fetch_linux55_file include/crypto/internal/chacha.h
+        fi
+        if ! grep -q 'hchacha_block_generic' "$LINUX_DIR/lib/crypto/chacha.c" 2>/dev/null; then
+          fetch_linux55_file lib/crypto/chacha.c
+        fi
+        if [ ! -f "$LINUX_DIR/lib/crypto/libchacha.c" ]; then
+          fetch_linux55_file lib/crypto/libchacha.c
+        fi
+        if ! grep -q 'poly1305_init(struct poly1305_desc_ctx' "$LINUX_DIR/include/crypto/poly1305.h" 2>/dev/null || ! grep -q 'CRYPTO_LIB_POLY1305_RSIZE' "$LINUX_DIR/include/crypto/poly1305.h" 2>/dev/null; then
+          fetch_linux55_file include/crypto/poly1305.h
+        fi
+        if [ ! -f "$LINUX_DIR/include/crypto/internal/poly1305.h" ]; then
+          fetch_linux55_file include/crypto/internal/poly1305.h
+        fi
+        if ! grep -q 'poly1305_init_generic' "$LINUX_DIR/lib/crypto/poly1305.c" 2>/dev/null; then
+          fetch_linux55_file lib/crypto/poly1305.c
+        fi
 
         apply_backport_patch() {
           local patch_file="$1"
@@ -257,6 +283,60 @@ jobs:
           done
         fi
 
+        if ! grep -q '^config CRYPTO_ARCH_HAVE_LIB_CHACHA$' "$LINUX_DIR/lib/crypto/Kconfig"; then
+          cat >> "$LINUX_DIR/lib/crypto/Kconfig" <<'EOF'
+
+        config CRYPTO_ARCH_HAVE_LIB_CHACHA
+                tristate
+        EOF
+        fi
+        if ! grep -q '^config CRYPTO_LIB_CHACHA_GENERIC$' "$LINUX_DIR/lib/crypto/Kconfig"; then
+          cat >> "$LINUX_DIR/lib/crypto/Kconfig" <<'EOF'
+
+        config CRYPTO_LIB_CHACHA_GENERIC
+                tristate
+                select CRYPTO_ALGAPI
+        EOF
+        fi
+        if ! grep -q '^config CRYPTO_LIB_CHACHA$' "$LINUX_DIR/lib/crypto/Kconfig"; then
+          cat >> "$LINUX_DIR/lib/crypto/Kconfig" <<'EOF'
+
+        config CRYPTO_LIB_CHACHA
+                tristate "ChaCha library interface"
+                select CRYPTO_LIB_CHACHA_GENERIC
+        EOF
+        fi
+        if ! grep -q '^config CRYPTO_LIB_POLY1305_RSIZE$' "$LINUX_DIR/lib/crypto/Kconfig"; then
+          cat >> "$LINUX_DIR/lib/crypto/Kconfig" <<'EOF'
+
+        config CRYPTO_LIB_POLY1305_RSIZE
+                int
+                default 9 if ARM || ARM64
+                default 1
+        EOF
+        fi
+        if ! grep -q '^config CRYPTO_ARCH_HAVE_LIB_POLY1305$' "$LINUX_DIR/lib/crypto/Kconfig"; then
+          cat >> "$LINUX_DIR/lib/crypto/Kconfig" <<'EOF'
+
+        config CRYPTO_ARCH_HAVE_LIB_POLY1305
+                tristate
+        EOF
+        fi
+        if ! grep -q '^config CRYPTO_LIB_POLY1305_GENERIC$' "$LINUX_DIR/lib/crypto/Kconfig"; then
+          cat >> "$LINUX_DIR/lib/crypto/Kconfig" <<'EOF'
+
+        config CRYPTO_LIB_POLY1305_GENERIC
+                tristate
+        EOF
+        fi
+        if ! grep -q '^config CRYPTO_LIB_POLY1305$' "$LINUX_DIR/lib/crypto/Kconfig"; then
+          cat >> "$LINUX_DIR/lib/crypto/Kconfig" <<'EOF'
+
+        config CRYPTO_LIB_POLY1305
+                tristate "Poly1305 library interface"
+                select CRYPTO_LIB_POLY1305_GENERIC
+        EOF
+        fi
         if ! grep -q '^config CRYPTO_ARCH_HAVE_LIB_BLAKE2S$' "$LINUX_DIR/lib/crypto/Kconfig"; then
           cat >> "$LINUX_DIR/lib/crypto/Kconfig" <<'EOF'
 
@@ -311,8 +391,14 @@ jobs:
         EOF
         fi
 
-        sed -i '/CRYPTO_LIB_BLAKE2S/d;/libblake2s/d;/CRYPTO_LIB_CURVE25519/d;/libcurve25519/d;/CRYPTO_LIB_CHACHA20POLY1305/d;/libchacha20poly1305/d' "$LINUX_DIR/lib/crypto/Makefile"
+        sed -i '/obj-y.*chacha\.o/d;/CRYPTO_LIB_CHACHA_GENERIC/d;/libchacha/d;/CRYPTO_LIB_POLY1305_GENERIC/d;/libpoly1305/d;/CRYPTO_LIB_BLAKE2S/d;/libblake2s/d;/CRYPTO_LIB_CURVE25519/d;/libcurve25519/d;/CRYPTO_LIB_CHACHA20POLY1305/d;/libchacha20poly1305/d' "$LINUX_DIR/lib/crypto/Makefile"
         cat >> "$LINUX_DIR/lib/crypto/Makefile" <<'EOF'
+        obj-y						+= chacha.o
+        obj-$(CONFIG_CRYPTO_LIB_CHACHA_GENERIC)	+= libchacha.o
+
+        obj-$(CONFIG_CRYPTO_LIB_POLY1305_GENERIC)	+= libpoly1305.o
+        libpoly1305-y					:= poly1305.o
+
         obj-$(CONFIG_CRYPTO_LIB_BLAKE2S_GENERIC)	+= libblake2s-generic.o
         libblake2s-generic-y				+= blake2s-generic.o
 
@@ -344,9 +430,15 @@ jobs:
           echo "::error::CONFIG_WIREGUARD is not defined in the prepared kernel source"
           exit 1
         }
-        for header in curve25519.h chacha20poly1305.h blake2s.h; do
+        for header in curve25519.h chacha20poly1305.h blake2s.h chacha.h poly1305.h internal/poly1305.h; do
           if [ ! -f "$LINUX_DIR/include/crypto/$header" ]; then
             echo "::error::include/crypto/$header is missing from the prepared kernel source"
+            exit 1
+          fi
+        done
+        for src in chacha.c libchacha.c poly1305.c chacha20poly1305.c blake2s.c blake2s-generic.c; do
+          if [ ! -f "$LINUX_DIR/lib/crypto/$src" ]; then
+            echo "::error::lib/crypto/$src is missing from the prepared kernel source"
             exit 1
           fi
         done
@@ -355,8 +447,13 @@ jobs:
           ./scripts/config --file "$LINUX_DIR/.config" -d WIREGUARD_DEBUG
           ./scripts/config --file "$LINUX_DIR/.config" -m NET_UDP_TUNNEL
           ./scripts/config --file "$LINUX_DIR/.config" -m CRYPTO_LIB_CHACHA
+          ./scripts/config --file "$LINUX_DIR/.config" -m CRYPTO_LIB_CHACHA_GENERIC
+          ./scripts/config --file "$LINUX_DIR/.config" -d CRYPTO_ARCH_HAVE_LIB_CHACHA
           ./scripts/config --file "$LINUX_DIR/.config" -m CRYPTO_LIB_CHACHA20POLY1305
           ./scripts/config --file "$LINUX_DIR/.config" -m CRYPTO_LIB_POLY1305
+          ./scripts/config --file "$LINUX_DIR/.config" -m CRYPTO_LIB_POLY1305_GENERIC
+          ./scripts/config --file "$LINUX_DIR/.config" --set-val CRYPTO_LIB_POLY1305_RSIZE 9
+          ./scripts/config --file "$LINUX_DIR/.config" -d CRYPTO_ARCH_HAVE_LIB_POLY1305
           ./scripts/config --file "$LINUX_DIR/.config" -m CRYPTO_LIB_BLAKE2S
           ./scripts/config --file "$LINUX_DIR/.config" -m CRYPTO_LIB_BLAKE2S_GENERIC
           ./scripts/config --file "$LINUX_DIR/.config" -d CRYPTO_ARCH_HAVE_LIB_BLAKE2S
