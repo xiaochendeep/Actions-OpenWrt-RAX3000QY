@@ -196,10 +196,8 @@ jobs:
         fi
 
         if [ ! -d "$LINUX_DIR/drivers/net/wireguard" ]; then
-          echo "WireGuard source is missing from $LINUX_DIR; applying 5.4 backport patches"
-          for patch in target/linux/generic/backport-5.4/080-wireguard-*.patch; do
-            patch -d "$LINUX_DIR" -p1 < "$patch"
-          done
+          echo "WireGuard source is missing from $LINUX_DIR; applying the 5.4 WireGuard driver backport"
+          patch -d "$LINUX_DIR" -p1 < target/linux/generic/backport-5.4/080-wireguard-0072-net-WireGuard-secure-network-tunnel.patch
         fi
 
         if [ ! -d "$LINUX_DIR/drivers/net/wireguard" ]; then
