@@ -121,25 +121,19 @@ jobs:
       run: |
         cd openwrt
 
-        rm -rf feeds/packages/net/xray-core
-        wget -r --no-parent https://cdn.jsdelivr.net/gh/immortalwrt/packages@master/net/xray-core/
-        cp -rf cdn.jsdelivr.net/gh/immortalwrt/packages@master/net/xray-core feeds/packages/net/xray-core/
-        rm -rf cdn.jsdelivr.net
-        find feeds/packages/net/xray-core -name index.html -exec rm {} \;
+        PKG_TMP="$(mktemp -d)"
+        git clone --depth=1 --filter=blob:none --sparse https://github.com/immortalwrt/packages "$PKG_TMP"
+        (
+          cd "$PKG_TMP"
+          git sparse-checkout set net/xray-core net/tailscale net/natmap
+        )
+        rm -rf feeds/packages/net/xray-core feeds/packages/net/tailscale feeds/packages/net/natmap
+        cp -rf "$PKG_TMP/net/xray-core" feeds/packages/net/xray-core
+        cp -rf "$PKG_TMP/net/tailscale" feeds/packages/net/tailscale
+        cp -rf "$PKG_TMP/net/natmap" feeds/packages/net/natmap
+        rm -rf "$PKG_TMP"
 
-        rm -rf feeds/packages/net/tailscale
-        wget -r --no-parent https://cdn.jsdelivr.net/gh/immortalwrt/packages@master/net/tailscale/
-        cp -rf cdn.jsdelivr.net/gh/immortalwrt/packages@master/net/tailscale feeds/packages/net/tailscale/
-        rm -rf cdn.jsdelivr.net
-        find feeds/packages/net/tailscale -name index.html -exec rm {} \;
-
-        rm -rf feeds/packages/net/natmap
-        wget -r --no-parent https://cdn.jsdelivr.net/gh/immortalwrt/packages@master/net/natmap/
-        cp -rf cdn.jsdelivr.net/gh/immortalwrt/packages@master/net/natmap feeds/packages/net/natmap/
-        rm -rf cdn.jsdelivr.net
-        find feeds/packages/net/natmap -name index.html -exec rm {} \;
-
-        wget "https://www.dropbox.com/scl/fi/uccikbibj772c4sekzbk7/luci-app-turboacc.zip?rlkey=yzhkk0lfzhrthn8hbl1qt8k5j&st=31820445&dl=1" -O luci-app-turboacc.zip
+        wget --tries=5 --retry-connrefused --waitretry=5 "https://www.dropbox.com/scl/fi/uccikbibj772c4sekzbk7/luci-app-turboacc.zip?rlkey=yzhkk0lfzhrthn8hbl1qt8k5j&st=31820445&dl=1" -O luci-app-turboacc.zip
         rm -rf feeds/luci/applications/luci-app-turboacc
         unzip luci-app-turboacc.zip -d feeds/luci/applications/
         rm -rf luci-app-turboacc.zip
