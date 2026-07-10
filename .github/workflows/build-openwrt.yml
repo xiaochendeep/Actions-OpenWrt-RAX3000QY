@@ -174,7 +174,7 @@ jobs:
         cd openwrt
         KERNEL_TARGET_CONFIG="target/linux/ipq50xx/config-5.4"
         if [ -f "$KERNEL_TARGET_CONFIG" ]; then
-          sed -i '/CONFIG_WIREGUARD/d;/CONFIG_NET_UDP_TUNNEL/d;/CONFIG_CRYPTO_LIB_CHACHA/d;/CONFIG_CRYPTO_LIB_CHACHA20POLY1305/d;/CONFIG_CRYPTO_LIB_POLY1305/d;/CONFIG_CRYPTO_LIB_BLAKE2S/d;/CONFIG_CRYPTO_LIB_BLAKE2S_GENERIC/d;/CONFIG_CRYPTO_LIB_CURVE25519/d;/CONFIG_CRYPTO_LIB_CURVE25519_GENERIC/d;/CONFIG_CRYPTO_ARCH_HAVE_LIB_CURVE25519/d' "$KERNEL_TARGET_CONFIG"
+          sed -i '/CONFIG_WIREGUARD/d;/CONFIG_NET_UDP_TUNNEL/d;/CONFIG_CRYPTO_LIB_CHACHA/d;/CONFIG_CRYPTO_LIB_CHACHA20POLY1305/d;/CONFIG_CRYPTO_LIB_POLY1305/d;/CONFIG_CRYPTO_LIB_BLAKE2S/d;/CONFIG_CRYPTO_LIB_BLAKE2S_GENERIC/d;/CONFIG_CRYPTO_ARCH_HAVE_LIB_BLAKE2S/d;/CONFIG_CRYPTO_LIB_CURVE25519/d;/CONFIG_CRYPTO_LIB_CURVE25519_GENERIC/d;/CONFIG_CRYPTO_ARCH_HAVE_LIB_CURVE25519/d' "$KERNEL_TARGET_CONFIG"
           cat >> "$KERNEL_TARGET_CONFIG" <<'EOF'
         CONFIG_WIREGUARD=m
         # CONFIG_WIREGUARD_DEBUG is not set
@@ -184,6 +184,7 @@ jobs:
         CONFIG_CRYPTO_LIB_POLY1305=m
         CONFIG_CRYPTO_LIB_BLAKE2S=m
         CONFIG_CRYPTO_LIB_BLAKE2S_GENERIC=m
+        # CONFIG_CRYPTO_ARCH_HAVE_LIB_BLAKE2S is not set
         CONFIG_CRYPTO_LIB_CURVE25519=m
         CONFIG_CRYPTO_LIB_CURVE25519_GENERIC=m
         # CONFIG_CRYPTO_ARCH_HAVE_LIB_CURVE25519 is not set
@@ -196,6 +197,39 @@ jobs:
         if [ -z "$LINUX_DIR" ]; then
           echo "::error::kernel source directory was not prepared"
           exit 1
+        fi
+
+        mkdir -p "$LINUX_DIR/include/crypto/internal" "$LINUX_DIR/lib/crypto"
+        if [ ! -f "$LINUX_DIR/lib/crypto/Kconfig" ]; then
+          cat > "$LINUX_DIR/lib/crypto/Kconfig" <<'EOF'
+        # SPDX-License-Identifier: GPL-2.0
+
+        comment "Crypto library routines"
+        EOF
+        fi
+        if ! grep -q 'source "lib/crypto/Kconfig"' "$LINUX_DIR/crypto/Kconfig"; then
+          sed -i '/source "drivers\/crypto\/Kconfig"/i source "lib/crypto/Kconfig"' "$LINUX_DIR/crypto/Kconfig"
+        fi
+
+        fetch_linux55_file() {
+          local relpath="$1"
+          curl -fsSL --retry 5 --retry-connrefused --connect-timeout 20 \
+            "https://raw.githubusercontent.com/torvalds/linux/v5.5/$relpath" \
+            -o "$LINUX_DIR/$relpath"
+        }
+
+        if [ ! -f "$LINUX_DIR/include/crypto/blake2s.h" ]; then
+          fetch_linux55_file include/crypto/blake2s.h
+        fi
+        if [ ! -f "$LINUX_DIR/include/crypto/internal/blake2s.h" ]; then
+          fetch_linux55_file include/crypto/internal/blake2s.h
+        fi
+        if [ ! -f "$LINUX_DIR/lib/crypto/blake2s.c" ]; then
+          fetch_linux55_file lib/crypto/blake2s.c
+          sed -i 's/^bool blake2s_selftest(void);$/static inline bool blake2s_selftest(void) { return true; }/' "$LINUX_DIR/lib/crypto/blake2s.c"
+        fi
+        if [ ! -f "$LINUX_DIR/lib/crypto/blake2s-generic.c" ]; then
+          fetch_linux55_file lib/crypto/blake2s-generic.c
         fi
 
         apply_backport_patch() {
@@ -223,6 +257,28 @@ jobs:
           done
         fi
 
+        if ! grep -q '^config CRYPTO_ARCH_HAVE_LIB_BLAKE2S$' "$LINUX_DIR/lib/crypto/Kconfig"; then
+          cat >> "$LINUX_DIR/lib/crypto/Kconfig" <<'EOF'
+
+        config CRYPTO_ARCH_HAVE_LIB_BLAKE2S
+                tristate
+        EOF
+        fi
+        if ! grep -q '^config CRYPTO_LIB_BLAKE2S_GENERIC$' "$LINUX_DIR/lib/crypto/Kconfig"; then
+          cat >> "$LINUX_DIR/lib/crypto/Kconfig" <<'EOF'
+
+        config CRYPTO_LIB_BLAKE2S_GENERIC
+                tristate
+        EOF
+        fi
+        if ! grep -q '^config CRYPTO_LIB_BLAKE2S$' "$LINUX_DIR/lib/crypto/Kconfig"; then
+          cat >> "$LINUX_DIR/lib/crypto/Kconfig" <<'EOF'
+
+        config CRYPTO_LIB_BLAKE2S
+                tristate "BLAKE2s hash function library"
+                select CRYPTO_LIB_BLAKE2S_GENERIC
+        EOF
+        fi
         if ! grep -q '^config CRYPTO_ARCH_HAVE_LIB_CURVE25519$' "$LINUX_DIR/lib/crypto/Kconfig"; then
           cat >> "$LINUX_DIR/lib/crypto/Kconfig" <<'EOF'
 
@@ -255,8 +311,14 @@ jobs:
         EOF
         fi
 
-        sed -i '/CRYPTO_LIB_CURVE25519/d;/libcurve25519/d;/CRYPTO_LIB_CHACHA20POLY1305/d;/libchacha20poly1305/d' "$LINUX_DIR/lib/crypto/Makefile"
+        sed -i '/CRYPTO_LIB_BLAKE2S/d;/libblake2s/d;/CRYPTO_LIB_CURVE25519/d;/libcurve25519/d;/CRYPTO_LIB_CHACHA20POLY1305/d;/libchacha20poly1305/d' "$LINUX_DIR/lib/crypto/Makefile"
         cat >> "$LINUX_DIR/lib/crypto/Makefile" <<'EOF'
+        obj-$(CONFIG_CRYPTO_LIB_BLAKE2S_GENERIC)	+= libblake2s-generic.o
+        libblake2s-generic-y				+= blake2s-generic.o
+
+        obj-$(CONFIG_CRYPTO_LIB_BLAKE2S)		+= libblake2s.o
+        libblake2s-y					+= blake2s.o
+
         obj-$(CONFIG_CRYPTO_LIB_CHACHA20POLY1305)	+= libchacha20poly1305.o
         libchacha20poly1305-y				+= chacha20poly1305.o
 
@@ -297,6 +359,7 @@ jobs:
           ./scripts/config --file "$LINUX_DIR/.config" -m CRYPTO_LIB_POLY1305
           ./scripts/config --file "$LINUX_DIR/.config" -m CRYPTO_LIB_BLAKE2S
           ./scripts/config --file "$LINUX_DIR/.config" -m CRYPTO_LIB_BLAKE2S_GENERIC
+          ./scripts/config --file "$LINUX_DIR/.config" -d CRYPTO_ARCH_HAVE_LIB_BLAKE2S
           ./scripts/config --file "$LINUX_DIR/.config" -m CRYPTO_LIB_CURVE25519
           ./scripts/config --file "$LINUX_DIR/.config" -m CRYPTO_LIB_CURVE25519_GENERIC
           ./scripts/config --file "$LINUX_DIR/.config" -d CRYPTO_ARCH_HAVE_LIB_CURVE25519
