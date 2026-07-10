@@ -11,6 +11,15 @@
 name: Build OpenWrt
 
 on:
+  push:
+    branches:
+      - master
+    paths:
+      - '.github/workflows/build-openwrt.yml'
+      - '.config'
+      - 'diy-part*.sh'
+      - 'feeds.conf.default'
+      - 'files/**'
   repository_dispatch:
   workflow_dispatch:
     inputs:
