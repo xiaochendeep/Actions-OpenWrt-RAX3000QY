@@ -174,7 +174,7 @@ jobs:
         cd openwrt
         KERNEL_TARGET_CONFIG="target/linux/ipq50xx/config-5.4"
         if [ -f "$KERNEL_TARGET_CONFIG" ]; then
-          sed -i '/CONFIG_WIREGUARD/d;/CONFIG_NET_UDP_TUNNEL/d;/CONFIG_CRYPTO_LIB_CHACHA/d;/CONFIG_CRYPTO_LIB_CHACHA20POLY1305/d;/CONFIG_CRYPTO_LIB_POLY1305/d;/CONFIG_CRYPTO_LIB_BLAKE2S/d;/CONFIG_CRYPTO_LIB_CURVE25519/d' "$KERNEL_TARGET_CONFIG"
+          sed -i '/CONFIG_WIREGUARD/d;/CONFIG_NET_UDP_TUNNEL/d;/CONFIG_CRYPTO_LIB_CHACHA/d;/CONFIG_CRYPTO_LIB_CHACHA20POLY1305/d;/CONFIG_CRYPTO_LIB_POLY1305/d;/CONFIG_CRYPTO_LIB_BLAKE2S/d;/CONFIG_CRYPTO_LIB_BLAKE2S_GENERIC/d;/CONFIG_CRYPTO_LIB_CURVE25519/d;/CONFIG_CRYPTO_LIB_CURVE25519_GENERIC/d;/CONFIG_CRYPTO_ARCH_HAVE_LIB_CURVE25519/d' "$KERNEL_TARGET_CONFIG"
           cat >> "$KERNEL_TARGET_CONFIG" <<'EOF'
         CONFIG_WIREGUARD=m
         # CONFIG_WIREGUARD_DEBUG is not set
@@ -183,7 +183,10 @@ jobs:
         CONFIG_CRYPTO_LIB_CHACHA20POLY1305=m
         CONFIG_CRYPTO_LIB_POLY1305=m
         CONFIG_CRYPTO_LIB_BLAKE2S=m
+        CONFIG_CRYPTO_LIB_BLAKE2S_GENERIC=m
         CONFIG_CRYPTO_LIB_CURVE25519=m
+        CONFIG_CRYPTO_LIB_CURVE25519_GENERIC=m
+        # CONFIG_CRYPTO_ARCH_HAVE_LIB_CURVE25519 is not set
         EOF
         fi
 
@@ -195,9 +198,80 @@ jobs:
           exit 1
         fi
 
+        apply_backport_patch() {
+          local patch_file="$1"
+          echo "Applying $(basename "$patch_file")"
+          if ! patch -d "$LINUX_DIR" -p1 -N --batch < "$patch_file"; then
+            echo "::warning::$(basename "$patch_file") had rejects; continuing because QSDK may already carry part of this backport"
+          fi
+        }
+
+        if [ ! -f "$LINUX_DIR/include/crypto/curve25519.h" ] || [ ! -f "$LINUX_DIR/include/crypto/chacha20poly1305.h" ]; then
+          echo "WireGuard crypto headers are missing from $LINUX_DIR; applying the required 5.4 crypto backports"
+          for patch_file in \
+            target/linux/generic/backport-5.4/080-wireguard-0025-crypto-curve25519-generic-C-library-implementations.patch \
+            target/linux/generic/backport-5.4/080-wireguard-0028-crypto-lib-curve25519-work-around-Clang-stack-spilli.patch \
+            target/linux/generic/backport-5.4/080-wireguard-0032-crypto-chacha20poly1305-import-construction-and-self.patch \
+            target/linux/generic/backport-5.4/080-wireguard-0033-crypto-lib-chacha20poly1305-reimplement-crypt_from_s.patch \
+            target/linux/generic/backport-5.4/080-wireguard-0036-crypto-lib-chacha20poly1305-use-chacha20_crypt.patch \
+            target/linux/generic/backport-5.4/080-wireguard-0045-crypto-curve25519-Fix-selftest-build-error.patch \
+            target/linux/generic/backport-5.4/080-wireguard-0051-crypto-chacha20poly1305-prevent-integer-overflow-on-.patch \
+            target/linux/generic/backport-5.4/080-wireguard-0058-crypto-lib-chacha20poly1305-Add-missing-function-dec.patch \
+            target/linux/generic/backport-5.4/080-wireguard-0070-crypto-lib-chacha20poly1305-define-empty-module-exit.patch
+          do
+            apply_backport_patch "$patch_file"
+          done
+        fi
+
+        if ! grep -q '^config CRYPTO_ARCH_HAVE_LIB_CURVE25519$' "$LINUX_DIR/lib/crypto/Kconfig"; then
+          cat >> "$LINUX_DIR/lib/crypto/Kconfig" <<'EOF'
+
+        config CRYPTO_ARCH_HAVE_LIB_CURVE25519
+                tristate
+        EOF
+        fi
+        if ! grep -q '^config CRYPTO_LIB_CURVE25519_GENERIC$' "$LINUX_DIR/lib/crypto/Kconfig"; then
+          cat >> "$LINUX_DIR/lib/crypto/Kconfig" <<'EOF'
+
+        config CRYPTO_LIB_CURVE25519_GENERIC
+                tristate
+        EOF
+        fi
+        if ! grep -q '^config CRYPTO_LIB_CURVE25519$' "$LINUX_DIR/lib/crypto/Kconfig"; then
+          cat >> "$LINUX_DIR/lib/crypto/Kconfig" <<'EOF'
+
+        config CRYPTO_LIB_CURVE25519
+                tristate "Curve25519 scalar multiplication library"
+                select CRYPTO_LIB_CURVE25519_GENERIC
+        EOF
+        fi
+        if ! grep -q '^config CRYPTO_LIB_CHACHA20POLY1305$' "$LINUX_DIR/lib/crypto/Kconfig"; then
+          cat >> "$LINUX_DIR/lib/crypto/Kconfig" <<'EOF'
+
+        config CRYPTO_LIB_CHACHA20POLY1305
+                tristate "ChaCha20-Poly1305 AEAD support"
+                select CRYPTO_LIB_CHACHA
+                select CRYPTO_LIB_POLY1305
+        EOF
+        fi
+
+        sed -i '/CRYPTO_LIB_CURVE25519/d;/libcurve25519/d;/CRYPTO_LIB_CHACHA20POLY1305/d;/libchacha20poly1305/d' "$LINUX_DIR/lib/crypto/Makefile"
+        cat >> "$LINUX_DIR/lib/crypto/Makefile" <<'EOF'
+        obj-$(CONFIG_CRYPTO_LIB_CHACHA20POLY1305)	+= libchacha20poly1305.o
+        libchacha20poly1305-y				+= chacha20poly1305.o
+
+        obj-$(CONFIG_CRYPTO_LIB_CURVE25519_GENERIC)	+= libcurve25519-generic.o
+        libcurve25519-generic-y			:= curve25519-fiat32.o
+        libcurve25519-generic-$(CONFIG_ARCH_SUPPORTS_INT128)	+= curve25519-hacl64.o
+        libcurve25519-generic-y			+= curve25519-generic.o
+
+        obj-$(CONFIG_CRYPTO_LIB_CURVE25519)		+= libcurve25519.o
+        libcurve25519-y				+= curve25519.o
+        EOF
+
         if [ ! -d "$LINUX_DIR/drivers/net/wireguard" ]; then
           echo "WireGuard source is missing from $LINUX_DIR; applying the 5.4 WireGuard driver backport"
-          patch -d "$LINUX_DIR" -p1 < target/linux/generic/backport-5.4/080-wireguard-0072-net-WireGuard-secure-network-tunnel.patch
+          apply_backport_patch target/linux/generic/backport-5.4/080-wireguard-0072-net-WireGuard-secure-network-tunnel.patch
         fi
 
         if [ ! -d "$LINUX_DIR/drivers/net/wireguard" ]; then
@@ -208,6 +282,12 @@ jobs:
           echo "::error::CONFIG_WIREGUARD is not defined in the prepared kernel source"
           exit 1
         }
+        for header in curve25519.h chacha20poly1305.h blake2s.h; do
+          if [ ! -f "$LINUX_DIR/include/crypto/$header" ]; then
+            echo "::error::include/crypto/$header is missing from the prepared kernel source"
+            exit 1
+          fi
+        done
         if [ -f "$LINUX_DIR/.config" ]; then
           ./scripts/config --file "$LINUX_DIR/.config" -m WIREGUARD
           ./scripts/config --file "$LINUX_DIR/.config" -d WIREGUARD_DEBUG
@@ -216,7 +296,10 @@ jobs:
           ./scripts/config --file "$LINUX_DIR/.config" -m CRYPTO_LIB_CHACHA20POLY1305
           ./scripts/config --file "$LINUX_DIR/.config" -m CRYPTO_LIB_POLY1305
           ./scripts/config --file "$LINUX_DIR/.config" -m CRYPTO_LIB_BLAKE2S
+          ./scripts/config --file "$LINUX_DIR/.config" -m CRYPTO_LIB_BLAKE2S_GENERIC
           ./scripts/config --file "$LINUX_DIR/.config" -m CRYPTO_LIB_CURVE25519
+          ./scripts/config --file "$LINUX_DIR/.config" -m CRYPTO_LIB_CURVE25519_GENERIC
+          ./scripts/config --file "$LINUX_DIR/.config" -d CRYPTO_ARCH_HAVE_LIB_CURVE25519
         fi
 
     - name: Compile the firmware
